@@ -1,7 +1,9 @@
 """Unit tests for vrm bridge core logic."""
 
+import json
 import os
 import sys
+from unittest.mock import Mock, patch
 
 # Inject required env vars before importing bridge
 os.environ.setdefault("VRM_TOKEN", "test-token")
@@ -126,6 +128,34 @@ class TestStoreMetrics:
         )
         assert bridge.metric_buffer["battery_soc"]["value_num"] == 85.3
         bridge.metric_buffer.clear()
+
+
+class TestLakematesPush:
+    def test_noop_when_not_configured(self):
+        with patch.object(bridge, "LAKEMATES_PUSH_URL", ""), patch.object(bridge, "LAKEMATES_SITE_KEY", ""):
+            bridge.push_lakemates({"battery_soc": {"value": "85", "value_num": 85.0, "source_ts": "2026-04-11T16:00:00Z"}}, "2026-04-11T16:00:05Z")
+
+    def test_posts_expected_payload(self):
+        metrics = {
+            "battery_soc": {"value": "85", "value_num": 85.0, "source_ts": "2026-04-11T16:00:00Z"},
+            "solar_power": {"value": "420", "value_num": 420.0, "source_ts": "2026-04-11T16:00:01Z"},
+        }
+        response = Mock()
+        response.raise_for_status.return_value = None
+
+        with patch.object(bridge, "LAKEMATES_PUSH_URL", "https://stage.lakemates.com/api/victron/ingest"), \
+             patch.object(bridge, "LAKEMATES_SITE_KEY", "stage-victron"), \
+             patch.object(bridge.requests, "post", return_value=response) as mock_post:
+            bridge.push_lakemates(metrics, "2026-04-11T16:00:05Z")
+
+        args, kwargs = mock_post.call_args
+        assert args[0] == "https://stage.lakemates.com/api/victron/ingest"
+        assert kwargs["headers"] == {"Content-Type": "application/json"}
+        payload = json.loads(kwargs["data"])
+        assert payload["siteKey"] == "stage-victron"
+        assert payload["capturedAt"] == "2026-04-11T16:00:05Z"
+        assert len(payload["metrics"]) == 2
+        assert payload["metrics"][0]["metricKey"] == "battery_soc"
 
 
 class TestSchemaSQL:

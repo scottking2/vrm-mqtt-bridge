@@ -1,5 +1,6 @@
 """VRM bridge — polls Victron VRM diagnostics, writes Postgres, republishes to local Mosquitto."""
 
+import json
 import logging
 import os
 import signal
@@ -40,6 +41,10 @@ DATABASE_PASS = os.environ["DATABASE_PASS"]
 DATABASE_PORT = int(os.environ.get("DATABASE_PORT", "5432"))
 
 DB_WRITE_INTERVAL = int(os.environ.get("DB_WRITE_INTERVAL", "30"))
+
+LAKEMATES_PUSH_URL = os.environ.get("LAKEMATES_PUSH_URL", "").strip()
+LAKEMATES_SITE_KEY = os.environ.get("LAKEMATES_SITE_KEY", "").strip()
+LAKEMATES_PUSH_TIMEOUT = int(os.environ.get("LAKEMATES_PUSH_TIMEOUT", "10"))
 
 HEALTH_FILE = Path("/tmp/healthy")
 
@@ -385,6 +390,33 @@ def republish_local(metric: str, value_str: str) -> None:
         local_client.publish(topic, value_str, qos=0, retain=True)
 
 
+def push_lakemates(metrics: dict[str, dict[str, Any]], captured_at: str) -> None:
+    if not LAKEMATES_PUSH_URL or not LAKEMATES_SITE_KEY or not metrics:
+        return
+
+    payload = {
+        "siteKey": LAKEMATES_SITE_KEY,
+        "capturedAt": captured_at,
+        "metrics": [
+            {
+                "metricKey": metric,
+                "metricValue": data.get("value"),
+                "metricValueNum": data.get("value_num"),
+                "sourceTs": data.get("source_ts") or captured_at,
+            }
+            for metric, data in metrics.items()
+        ],
+    }
+
+    response = requests.post(
+        LAKEMATES_PUSH_URL,
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload),
+        timeout=LAKEMATES_PUSH_TIMEOUT,
+    )
+    response.raise_for_status()
+
+
 # ---------------------------------------------------------------------------
 # VRM REST polling
 # ---------------------------------------------------------------------------
@@ -411,9 +443,12 @@ def poller_loop() -> None:
     while not shutdown_event.is_set():
         try:
             metrics = poll_vrm(session, installation_id)
+            observed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             store_metrics(metrics)
             for metric, data in metrics.items():
                 republish_local(metric, data["value"])
+            if LAKEMATES_PUSH_URL and LAKEMATES_SITE_KEY:
+                push_lakemates(metrics, observed_at)
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "?"
             body = exc.response.text[:500] if exc.response is not None else ""
