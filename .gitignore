@@ -1,2 +1,13 @@
 __pycache__/
 *.pyc
+.pytest_cache/
+.venv/
+venv/
+.env
+.env.*
+*.pem
+*.key
+*.crt
+secrets/
+coverage.xml
+htmlcov/

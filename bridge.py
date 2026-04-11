@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import os
 import signal
 import threading
@@ -33,6 +34,8 @@ VRM_REQUEST_TIMEOUT = int(os.environ.get("VRM_REQUEST_TIMEOUT", "20"))
 LOCAL_MQTT_HOST = os.environ.get("LOCAL_MQTT_HOST", "localhost")
 LOCAL_MQTT_PORT = int(os.environ.get("LOCAL_MQTT_PORT", "1883"))
 LOCAL_MQTT_PREFIX = os.environ.get("LOCAL_MQTT_PREFIX", "victron")
+LOCAL_MQTT_USERNAME = os.environ.get("LOCAL_MQTT_USERNAME", "").strip()
+LOCAL_MQTT_PASSWORD = os.environ.get("LOCAL_MQTT_PASSWORD", "").strip()
 
 DATABASE_HOST = os.environ["DATABASE_HOST"]
 DATABASE_NAME = os.environ["DATABASE_NAME"]
@@ -44,6 +47,7 @@ DB_WRITE_INTERVAL = int(os.environ.get("DB_WRITE_INTERVAL", "30"))
 
 LAKEMATES_PUSH_URL = os.environ.get("LAKEMATES_PUSH_URL", "").strip()
 LAKEMATES_SITE_KEY = os.environ.get("LAKEMATES_SITE_KEY", "").strip()
+LAKEMATES_INGEST_SECRET = os.environ.get("LAKEMATES_INGEST_SECRET", "").strip()
 LAKEMATES_PUSH_TIMEOUT = int(os.environ.get("LAKEMATES_PUSH_TIMEOUT", "10"))
 
 HEALTH_FILE = Path("/tmp/healthy")
@@ -160,9 +164,14 @@ def coerce_value(value: Any) -> tuple[str | None, float | None]:
         return (None, None)
     try:
         numeric_value = float(value)
+        if not math.isfinite(numeric_value):
+            numeric_value = None
     except (TypeError, ValueError):
         numeric_value = None
-    return (str(value), numeric_value)
+    text_value = str(value)
+    if len(text_value) > 256:
+        text_value = text_value[:256]
+    return (text_value, numeric_value)
 
 
 def extract_item_value(item: dict[str, Any]) -> tuple[str | None, float | None]:
@@ -372,6 +381,9 @@ def connect_local_mqtt() -> mqtt.Client:
         callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
     )
 
+    if LOCAL_MQTT_USERNAME:
+        client.username_pw_set(LOCAL_MQTT_USERNAME, LOCAL_MQTT_PASSWORD or None)
+
     def on_connect(client, userdata, flags, rc, properties=None):
         if rc == 0:
             log.info("Connected to local MQTT at %s:%d", LOCAL_MQTT_HOST, LOCAL_MQTT_PORT)
@@ -394,6 +406,12 @@ def push_lakemates(metrics: dict[str, dict[str, Any]], captured_at: str) -> None
     if not LAKEMATES_PUSH_URL or not LAKEMATES_SITE_KEY or not metrics:
         return
 
+    if not LAKEMATES_PUSH_URL.startswith("https://"):
+        raise RuntimeError("LAKEMATES_PUSH_URL must use https")
+
+    if not LAKEMATES_INGEST_SECRET:
+        raise RuntimeError("LAKEMATES_INGEST_SECRET is required when pushing to Lakemates")
+
     payload = {
         "siteKey": LAKEMATES_SITE_KEY,
         "capturedAt": captured_at,
@@ -410,7 +428,10 @@ def push_lakemates(metrics: dict[str, dict[str, Any]], captured_at: str) -> None
 
     response = requests.post(
         LAKEMATES_PUSH_URL,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "X-Ingest-Secret": LAKEMATES_INGEST_SECRET,
+        },
         data=json.dumps(payload),
         timeout=LAKEMATES_PUSH_TIMEOUT,
     )
