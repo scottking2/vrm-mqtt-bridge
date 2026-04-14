@@ -1,6 +1,7 @@
 """Unit tests for vrm bridge core logic."""
 
 import base64
+import hashlib
 import json
 import os
 import sys
@@ -244,14 +245,14 @@ class TestLakematesDecrypt:
             "tag": base64.b64encode(b"tagtagtagtagtag1").decode("ascii"),
             "aad": base64.b64encode(b"boat:tranquility").decode("ascii"),
         }
-        key = base64.b64encode(b"0123456789abcdef0123456789abcdef").decode("ascii")
+        key = "shared-secret-string"
 
         with patch.object(bridge, "AESGCM", FakeAESGCM):
             result = bridge.decrypt_json_payload(payload, key)
 
         assert result["vrmToken"] == "token-a"
         assert FakeAESGCM.last_args == (
-            b"0123456789abcdef0123456789abcdef",
+            hashlib.sha256(key.encode("utf-8")).digest(),
             b"123456789012",
             b"ciphertagtagtagtagtag1",
             b"boat:tranquility",

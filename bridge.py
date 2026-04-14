@@ -1,6 +1,7 @@
 """Victron VRM bridge with stage-safe multi-boat runtime support."""
 
 import base64
+import hashlib
 import json
 import logging
 import math
@@ -600,32 +601,7 @@ def _decode_secret_bytes(value: str) -> bytes:
     text = value.strip()
     if not text:
         raise RuntimeError("Encryption key is empty")
-
-    candidates: list[bytes] = []
-
-    try:
-        candidates.append(bytes.fromhex(text))
-    except ValueError:
-        pass
-
-    for decoder in (
-        lambda data: base64.b64decode(data, validate=True),
-        lambda data: base64.urlsafe_b64decode(data + "=" * (-len(data) % 4)),
-    ):
-        try:
-            decoded = decoder(text)
-            if decoded:
-                candidates.append(decoded)
-        except Exception:
-            continue
-
-    candidates.append(text.encode("utf-8"))
-
-    for candidate in candidates:
-        if len(candidate) in {16, 24, 32}:
-            return candidate
-
-    raise RuntimeError("VICTRON_ENCRYPTION_KEY must decode to 16, 24, or 32 bytes")
+    return hashlib.sha256(text.encode("utf-8")).digest()
 
 
 def _decode_encrypted_field(value: Any, field_name: str) -> bytes:
