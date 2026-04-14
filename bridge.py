@@ -1397,6 +1397,8 @@ def push_lakemates(
             data=json.dumps(build_lakemates_payload(integration, metrics, captured_at)),
             timeout=status_client.config.request_timeout,
         )
+        if response.status_code >= 400:
+            log.error("[%s] Lakemates ingest failed: HTTP %s %s", integration.boat_slug, response.status_code, response.text[:500])
         response.raise_for_status()
         return True
 
