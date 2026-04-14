@@ -536,7 +536,6 @@ class TestLakematesPush:
         payload = json.loads(kwargs["data"])
         assert payload["siteKey"] == "stage-victron"
         assert payload["capturedAt"] == "2026-04-11T16:00:05Z"
-        assert payload["summary"]["batterySoc"] == 85.0
         assert len(payload["metrics"]) == 2
         assert payload["metrics"][0]["metricKey"] == "battery_soc"
 

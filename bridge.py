@@ -170,6 +170,7 @@ class LakematesInternalConfig:
     machine_token: str = ""
     encryption_key: str = ""
     config_path: str = "/api/internal/victron/integrations"
+    ingest_path: str = "/api/internal/victron/ingest"
     status_path: str = "/api/internal/victron/integrations/status"
     request_timeout: int = 15
     refresh_interval: int = 300
@@ -358,6 +359,7 @@ def _load_lakemates_internal_config(payload: dict[str, Any] | None = None) -> La
         machine_token=machine_token,
         encryption_key=encryption_key,
         config_path=str(first_present(block, "configPath", default=os.environ.get("VICTRON_INTERNAL_API_CONFIG_PATH", "/api/internal/victron/integrations"))).strip() or "/api/internal/victron/integrations",
+        ingest_path=str(first_present(block, "ingestPath", default=os.environ.get("VICTRON_INTERNAL_API_INGEST_PATH", "/api/internal/victron/ingest"))).strip() or "/api/internal/victron/ingest",
         status_path=str(first_present(block, "statusPath", default=os.environ.get("VICTRON_INTERNAL_API_STATUS_PATH", "/api/internal/victron/integrations/status"))).strip() or "/api/internal/victron/integrations/status",
         request_timeout=_parse_int(
             first_present(block, "requestTimeout", default=os.environ.get("VICTRON_INTERNAL_API_TIMEOUT")),
@@ -756,18 +758,15 @@ class LakematesInternalApiClient:
             return
         payload = {
             "boatKey": status.boat_slug,
-            "boatName": status.boat_name,
-            "siteKey": status.site_key,
-            "enabled": status.enabled,
-            "runtimeStatus": status.runtime_status,
-            "lastPollAt": status.last_poll_at,
+            "status": map_runtime_status(status.runtime_status),
+            "lastSyncAt": status.last_poll_at,
+            "lastSnapshotAt": status.last_push_at,
             "lastSuccessAt": status.last_success_at,
             "lastErrorAt": status.last_error_at,
             "lastErrorCode": status.last_error_code,
             "lastErrorMessage": status.last_error_message,
-            "consecutiveFailures": status.consecutive_failures,
-            "lastMetricCount": status.last_metric_count,
-            "lastPushAt": status.last_push_at,
+            "eventType": "bridge_heartbeat",
+            "eventDetail": f"runtime={status.runtime_status}; metrics={status.last_metric_count}; failures={status.consecutive_failures}",
         }
         response = self.session.post(
             self.build_url(self.config.status_path),
@@ -829,6 +828,21 @@ def describe_http_error(exc: requests.HTTPError, prefix: str) -> tuple[str, str]
     status = str(exc.response.status_code) if exc.response is not None else "http_error"
     reason = exc.response.reason if exc.response is not None and exc.response.reason else prefix
     return status, f"{prefix}: HTTP {status} {reason}".strip()
+
+
+def map_runtime_status(runtime_status: str) -> str:
+    normalized = (runtime_status or "").strip().lower()
+    if normalized in {"healthy", "success"}:
+        return "healthy"
+    if normalized in {"disabled"}:
+        return "disabled"
+    if normalized in {"suspended"}:
+        return "suspended"
+    if normalized in {"missing_credentials", "pending_credentials"}:
+        return "pending_credentials"
+    if normalized in {"starting", "polling", "pending_sync"}:
+        return "pending_sync"
+    return "error"
 
 
 def publish_status_callback(client: LakematesInternalApiClient | None, state: "BridgeState", boat_slug: str) -> None:
@@ -1362,8 +1376,8 @@ def republish_local(mqtt_config: MqttConfig, integration: IntegrationConfig, met
 # ---------------------------------------------------------------------------
 
 def build_lakemates_payload(integration: IntegrationConfig, metrics: dict[str, dict[str, Any]], captured_at: str) -> dict[str, Any]:
-    payload = {
-        "siteKey": integration.lakemates.site_key,
+    return {
+        "boatKey": integration.boat_slug,
         "capturedAt": captured_at,
         "metrics": [
             {
@@ -1375,14 +1389,28 @@ def build_lakemates_payload(integration: IntegrationConfig, metrics: dict[str, d
             for metric, data in metrics.items()
         ],
     }
-    if integration.lakemates.include_summary:
-        payload["summary"] = build_summary(metrics)
-    return payload
 
 
-def push_lakemates(integration: IntegrationConfig, metrics: dict[str, dict[str, Any]], captured_at: str) -> bool:
+def push_lakemates(
+    integration: IntegrationConfig,
+    metrics: dict[str, dict[str, Any]],
+    captured_at: str,
+    status_client: LakematesInternalApiClient | None = None,
+) -> bool:
+    if not metrics:
+        return False
+
+    if status_client is not None:
+        response = status_client.session.post(
+            status_client.build_url(status_client.config.ingest_path),
+            data=json.dumps(build_lakemates_payload(integration, metrics, captured_at)),
+            timeout=status_client.config.request_timeout,
+        )
+        response.raise_for_status()
+        return True
+
     push = integration.lakemates
-    if not push.push_url or not push.site_key or not metrics:
+    if not push.push_url or not push.site_key:
         return False
 
     if not push.push_url.startswith("https://"):
@@ -1397,7 +1425,11 @@ def push_lakemates(integration: IntegrationConfig, metrics: dict[str, dict[str, 
             "Content-Type": "application/json",
             "X-Ingest-Secret": push.ingest_secret,
         },
-        data=json.dumps(build_lakemates_payload(integration, metrics, captured_at)),
+        data=json.dumps({
+            "siteKey": push.site_key,
+            "capturedAt": captured_at,
+            "metrics": build_lakemates_payload(integration, metrics, captured_at)["metrics"],
+        }),
         timeout=push.timeout,
     )
     response.raise_for_status()
@@ -1437,7 +1469,7 @@ def integration_worker(
             state.store_metrics(integration.boat_slug, metrics)
             for metric, data in metrics.items():
                 republish_local(mqtt_config, integration, metric, data["value"])
-            pushed = push_lakemates(integration, metrics, observed_at)
+            pushed = push_lakemates(integration, metrics, observed_at, status_client=status_client)
             state.record_success(integration, observed_at, len(metrics), pushed)
             publish_status_callback(status_client, state, integration.boat_slug)
         except requests.HTTPError as exc:
