@@ -659,9 +659,14 @@ def _decrypt_aes_gcm_payload_bytes(payload: dict[str, Any], encryption_key: str)
 def decrypt_json_payload(payload: dict[str, Any], encryption_key: str) -> dict[str, Any]:
     decrypted = _decrypt_aes_gcm_payload_bytes(payload, encryption_key)
     try:
-        decoded = json.loads(decrypted.decode("utf-8"))
+        decoded_text = decrypted.decode("utf-8")
+        decoded = json.loads(decoded_text)
+    except json.JSONDecodeError:
+        return {"vrmToken": decoded_text}
     finally:
         decrypted = b""
+    if isinstance(decoded, str):
+        return {"vrmToken": decoded}
     if not isinstance(decoded, dict):
         raise RuntimeError("Decrypted credentials payload must be a JSON object")
     return decoded
