@@ -1462,7 +1462,15 @@ def integration_worker(
             state.store_metrics(integration.boat_slug, metrics)
             for metric, data in metrics.items():
                 republish_local(mqtt_config, integration, metric, data["value"])
-            pushed = push_lakemates(integration, metrics, observed_at, status_client=status_client)
+            try:
+                pushed = push_lakemates(integration, metrics, observed_at, status_client=status_client)
+            except requests.HTTPError as exc:
+                error_code, message = describe_http_error(exc, "Lakemates ingest failed")
+                state.record_failure(integration, observed_at, error_code, message)
+                publish_status_callback(status_client, state, integration.boat_slug)
+                log.error("[%s] %s", integration.boat_slug, message)
+                stop_event.wait(timeout=integration.poll_interval)
+                continue
             state.record_success(integration, observed_at, len(metrics), pushed)
             publish_status_callback(status_client, state, integration.boat_slug)
         except requests.HTTPError as exc:
