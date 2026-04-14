@@ -1246,7 +1246,17 @@ def flush_to_db(conn: psycopg.Connection, state: BridgeState, registry: Integrat
                        last_error_at, last_error_message, last_error_code, consecutive_failures,
                        last_metric_count, last_push_at, updated_at
                    )
-                   VALUES (%s, %s, %s, %s, %s, NULLIF(%s, ''), NULLIF(%s, ''), NULLIF(%s, ''), NULLIF(%s, ''), NULLIF(%s, ''), %s, %s, NULLIF(%s, ''), %s)
+                   VALUES (
+                       %s, %s, %s, %s, %s,
+                       NULLIF(%s, '')::timestamptz,
+                       NULLIF(%s, '')::timestamptz,
+                       NULLIF(%s, '')::timestamptz,
+                       NULLIF(%s, ''),
+                       NULLIF(%s, ''),
+                       %s, %s,
+                       NULLIF(%s, '')::timestamptz,
+                       %s
+                   )
                    ON CONFLICT (boat_slug) DO UPDATE SET
                      boat_name = EXCLUDED.boat_name,
                      site_key = EXCLUDED.site_key,
