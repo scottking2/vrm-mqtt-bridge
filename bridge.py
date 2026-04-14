@@ -314,7 +314,7 @@ def _load_integration_config(
     if not isinstance(item, dict):
         raise RuntimeError("integration entries must be objects")
 
-    boat_slug = _require_str(item, "boatSlug", "tenantSlug", "slug")
+    boat_slug = _require_str(item, "boatSlug", "boatKey", "tenantSlug", "slug")
     boat_name = str(first_present(item, "boatName", "displayName", "name", default=boat_slug)).strip() or boat_slug
     enabled = _parse_bool(first_present(item, "enabled"), default=True)
     resolved_token = vrm_token if vrm_token is not None else first_present(item, "vrmToken", "token")
